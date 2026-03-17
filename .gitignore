@@ -1,0 +1,16 @@
+# Foundry build artifacts
+out/
+cache/
+
+# Gas snapshots (optional — keep in repo if you want CI diffs)
+# .gas-snapshot
+
+# Environment secrets — NEVER commit
+.env
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
