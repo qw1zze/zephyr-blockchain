@@ -10,7 +10,7 @@ contract MessageRegistryTest is Test {
     event ChatCreated(
         bytes32 indexed chatId,
         address indexed creator,
-        address indexed recipient,
+        address[] participants,
         uint256 blockNumber
     );
     event BatchAnchored(
@@ -23,14 +23,26 @@ contract MessageRegistryTest is Test {
     );
 
     address internal constant ALICE = address(0xA11CE);
-    address internal constant BOB   = address(0xB0B);
-    address internal constant EVE   = address(0xE4E);
+    address internal constant BOB = address(0xB0B);
+    address internal constant EVE = address(0xE4E);
+    address internal constant CAROL = address(0xCA401);
 
     bytes32 internal constant CHAT_ID = keccak256("alice-bob-chat");
 
+    function _recipients1(address r) internal pure returns (address[] memory arr) {
+        arr = new address[](1);
+        arr[0] = r;
+    }
+
+    function _recipients2(address r1, address r2) internal pure returns (address[] memory arr) {
+        arr = new address[](2);
+        arr[0] = r1;
+        arr[1] = r2;
+    }
+
     function _createDefaultChat() internal {
         vm.prank(ALICE);
-        registry.createChat(CHAT_ID, BOB);
+        registry.createChat(CHAT_ID, _recipients1(BOB));
     }
 
     function _makeBatch(uint256 n)
@@ -68,13 +80,13 @@ contract MessageRegistryTest is Test {
     function test_RevertWhen_CreateChat_ZeroRecipient() public {
         vm.prank(ALICE);
         vm.expectRevert("MessageRegistry: zero recipient");
-        registry.createChat(CHAT_ID, address(0));
+        registry.createChat(CHAT_ID, _recipients1(address(0)));
     }
 
     function test_RevertWhen_CreateChat_SelfChat() public {
         vm.prank(ALICE);
         vm.expectRevert("MessageRegistry: self-chat not allowed");
-        registry.createChat(CHAT_ID, ALICE);
+        registry.createChat(CHAT_ID, _recipients1(ALICE));
     }
 
     function test_RevertWhen_CreateChat_AlreadyExists() public {
@@ -82,7 +94,13 @@ contract MessageRegistryTest is Test {
 
         vm.prank(ALICE);
         vm.expectRevert("MessageRegistry: chat already exists");
-        registry.createChat(CHAT_ID, BOB);
+        registry.createChat(CHAT_ID, _recipients1(BOB));
+    }
+
+    function test_RevertWhen_CreateChat_NoRecipients() public {
+        vm.prank(ALICE);
+        vm.expectRevert("MessageRegistry: no recipients");
+        registry.createChat(CHAT_ID, new address[](0));
     }
 
     function test_CreateChat_BothParticipantsAdded() public {
@@ -93,7 +111,6 @@ contract MessageRegistryTest is Test {
 
         assertEq(aliceChats.length, 1);
         assertEq(aliceChats[0], CHAT_ID);
-
         assertEq(bobChats.length, 1);
         assertEq(bobChats[0], CHAT_ID);
     }
@@ -102,11 +119,98 @@ contract MessageRegistryTest is Test {
         uint256 expectedBlock = 7;
         vm.roll(expectedBlock);
 
-        vm.expectEmit(true, true, true, true, address(registry));
-        emit ChatCreated(CHAT_ID, ALICE, BOB, expectedBlock);
+        address[] memory expected = new address[](2);
+        expected[0] = ALICE;
+        expected[1] = BOB;
+
+        vm.expectEmit(true, true, false, true, address(registry));
+        emit ChatCreated(CHAT_ID, ALICE, expected, expectedBlock);
 
         vm.prank(ALICE);
-        registry.createChat(CHAT_ID, BOB);
+        registry.createChat(CHAT_ID, _recipients1(BOB));
+    }
+
+    function test_CreateGroupChat_Success() public {
+        vm.prank(ALICE);
+        registry.createChat(CHAT_ID, _recipients2(BOB, EVE));
+
+        bytes32[] memory aliceChats = registry.getUserChats(ALICE);
+        bytes32[] memory bobChats   = registry.getUserChats(BOB);
+        bytes32[] memory eveChats   = registry.getUserChats(EVE);
+
+        assertEq(aliceChats.length, 1);
+        assertEq(bobChats.length,   1);
+        assertEq(eveChats.length,   1);
+    }
+
+    function test_CreateGroupChat_ParticipantsStored() public {
+        vm.prank(ALICE);
+        registry.createChat(CHAT_ID, _recipients2(BOB, EVE));
+
+        address[] memory parts = registry.getChatParticipants(CHAT_ID);
+        assertEq(parts.length, 3);
+        assertEq(parts[0], ALICE);
+        assertEq(parts[1], BOB);
+        assertEq(parts[2], EVE);
+    }
+
+    function test_CreateGroupChat_EmitsEvent() public {
+        uint256 expectedBlock = 42;
+        vm.roll(expectedBlock);
+
+        address[] memory expected = new address[](3);
+        expected[0] = ALICE;
+        expected[1] = BOB;
+        expected[2] = EVE;
+
+        vm.expectEmit(true, true, false, true, address(registry));
+        emit ChatCreated(CHAT_ID, ALICE, expected, expectedBlock);
+
+        vm.prank(ALICE);
+        registry.createChat(CHAT_ID, _recipients2(BOB, EVE));
+    }
+
+    function test_RevertWhen_CreateGroupChat_DuplicateRecipient() public {
+        vm.prank(ALICE);
+        vm.expectRevert("MessageRegistry: duplicate recipient");
+        registry.createChat(CHAT_ID, _recipients2(BOB, BOB));
+    }
+
+    function test_RevertWhen_CreateGroupChat_TooManyRecipients() public {
+        address[] memory recipients = new address[](20);
+        for (uint256 i; i < 20; i++) {
+            recipients[i] = address(uint160(0x1000 + i));
+        }
+        vm.prank(ALICE);
+        vm.expectRevert("MessageRegistry: too many recipients");
+        registry.createChat(CHAT_ID, recipients);
+    }
+
+    function test_GroupChat_AnchorBatch_AllParticipantsCanAnchor() public {
+        vm.prank(ALICE);
+        registry.createChat(CHAT_ID, _recipients2(BOB, EVE));
+
+        (bytes32[] memory ids, string[] memory cids, uint256[] memory ts) = _makeBatch(1);
+
+        vm.prank(BOB);
+        registry.anchorBatch(CHAT_ID, ids, cids, ts);
+
+        vm.prank(EVE);
+        registry.anchorBatch(CHAT_ID, ids, cids, ts);
+    }
+
+    function test_GetChatParticipants_Success() public {
+        _createDefaultChat();
+
+        address[] memory parts = registry.getChatParticipants(CHAT_ID);
+        assertEq(parts.length, 2);
+        assertEq(parts[0], ALICE);
+        assertEq(parts[1], BOB);
+    }
+
+    function test_RevertWhen_GetChatParticipants_NotExists() public {
+        vm.expectRevert("MessageRegistry: chat does not exist");
+        registry.getChatParticipants(keccak256("nonexistent"));
     }
 
     function test_AnchorBatch_Success() public {
@@ -140,7 +244,7 @@ contract MessageRegistryTest is Test {
         _createDefaultChat();
 
         bytes32[] memory ids = new bytes32[](2);
-        string[]  memory cids = new string[](1);  
+        string[]  memory cids = new string[](1);
         uint256[] memory ts = new uint256[](2);
 
         vm.prank(ALICE);
@@ -170,15 +274,30 @@ contract MessageRegistryTest is Test {
         registry.anchorBatch(CHAT_ID, ids, cids, ts);
     }
 
+    function test_AnchorBatch_EmitsEvent() public {
+        _createDefaultChat();
+
+        uint256 expectedBlock = 55;
+        vm.roll(expectedBlock);
+
+        (bytes32[] memory ids, string[] memory cids, uint256[] memory ts) = _makeBatch(2);
+
+        vm.expectEmit(true, true, false, true, address(registry));
+        emit BatchAnchored(CHAT_ID, ALICE, ids, cids, ts, expectedBlock);
+
+        vm.prank(ALICE);
+        registry.anchorBatch(CHAT_ID, ids, cids, ts);
+    }
+
     function test_GetUserChats_Success() public {
         bytes32 chat1 = keccak256("chat1");
         bytes32 chat2 = keccak256("chat2");
 
         vm.prank(ALICE);
-        registry.createChat(chat1, BOB);
+        registry.createChat(chat1, _recipients1(BOB));
 
         vm.prank(ALICE);
-        registry.createChat(chat2, EVE);
+        registry.createChat(chat2, _recipients1(EVE));
 
         bytes32[] memory chats = registry.getUserChats(ALICE);
         assertEq(chats.length, 2);
@@ -196,21 +315,6 @@ contract MessageRegistryTest is Test {
     function test_RevertWhen_GetChatCreatedAtBlock_NotExists() public {
         vm.expectRevert("MessageRegistry: chat does not exist");
         registry.getChatCreatedAtBlock(keccak256("nonexistent"));
-    }
-
-    function test_AnchorBatch_EmitsEvent() public {
-        _createDefaultChat();
-
-        uint256 expectedBlock = 55;
-        vm.roll(expectedBlock);
-
-        (bytes32[] memory ids, string[] memory cids, uint256[] memory ts) = _makeBatch(2);
-
-        vm.expectEmit(true, true, false, true, address(registry));
-        emit BatchAnchored(CHAT_ID, ALICE, ids, cids, ts, expectedBlock);
-
-        vm.prank(ALICE);
-        registry.anchorBatch(CHAT_ID, ids, cids, ts);
     }
 
     function test_Fuzz_AnchorBatch_RandomBatchSize(uint8 rawSize) public {
